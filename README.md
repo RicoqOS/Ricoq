@@ -3,6 +3,14 @@
 This is the source code for RicoqOS, an operating system runtime based on the
 seL4 microkernel. We aim to implement formal proof inside our code using Verus.
 
+To run the project:
+```sh
+nix develop
+nix run .#qemu
+nix run .#test
+nix flake check
+```
+
 ## Architecture
 
 seL4 remains the only privileged kernel on RING0. Everything above it is a
