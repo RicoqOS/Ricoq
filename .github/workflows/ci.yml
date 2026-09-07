@@ -1,0 +1,23 @@
+name: Boot
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.34.6/install
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          enable_kvm: false
+          extra_nix_config: accept-flake-config = true
+      - run: nix flake check --print-build-logs
