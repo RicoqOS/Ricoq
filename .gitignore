@@ -1,5 +1,6 @@
 /result
 /result-*
-/target/
+target/
 __pycache__/
 .ruff_cache/
+.DS_Store
