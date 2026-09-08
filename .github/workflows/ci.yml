@@ -1,4 +1,4 @@
-name: Boot
+name: CI
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -20,4 +20,5 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
           enable_kvm: false
           extra_nix_config: accept-flake-config = true
-      - run: nix flake check --print-build-logs
+      - name: Run Nix check
+        run: nix flake check --print-build-logs

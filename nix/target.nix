@@ -6,7 +6,12 @@ rec {
   cores = 1;
   timeoutSeconds = 120;
 
-  kernelConfig = { mkString, on, off, ... }: {
+  kernelConfig = {
+    mkString,
+    on,
+    off,
+    ...
+  }: {
     KernelArch = mkString "arm";
     KernelSel4Arch = mkString architecture;
     KernelPlatform = mkString platform;
@@ -20,15 +25,24 @@ rec {
   };
 
   qemuArgs = [
-    "-machine" "virt,virtualization=on"
-    "-accel" "tcg,thread=single"
-    "-cpu" cpu
-    "-smp" (toString cores)
-    "-m" (toString memoryMiB)
-    "-display" "none"
-    "-monitor" "none"
-    "-serial" "stdio"
-    "-nic" "none"
+    "-machine"
+    "virt,virtualization=on"
+    "-accel"
+    "tcg,thread=single"
+    "-cpu"
+    cpu
+    "-smp"
+    (toString cores)
+    "-m"
+    (toString memoryMiB)
+    "-display"
+    "none"
+    "-monitor"
+    "none"
+    "-serial"
+    "stdio"
+    "-nic"
+    "none"
     "-no-reboot"
   ];
 }

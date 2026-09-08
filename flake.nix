@@ -1,9 +1,9 @@
 {
-  description = "RicoqOS reproducible seL4 boot environment";
+  description = "RicoqOS environment";
 
   nixConfig = {
-    extra-substituters = [ "https://coliasgroup.cachix.org" ];
-    extra-trusted-public-keys = [ "coliasgroup.cachix.org-1:vYRVaHS5FCjsGmVVXlzF5LaIWjeEK17W+MHxK886zIE=" ];
+    extra-substituters = ["https://coliasgroup.cachix.org"];
+    extra-trusted-public-keys = ["coliasgroup.cachix.org-1:vYRVaHS5FCjsGmVVXlzF5LaIWjeEK17W+MHxK886zIE="];
   };
 
   inputs = {
@@ -22,17 +22,18 @@
     };
   };
 
-  outputs = inputs@{ nixpkgs, ... }:
-    let
-      systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
-      forAllSystems = nixpkgs.lib.genAttrs systems;
-      environments = forAllSystems (system: import ./nix/environment.nix {
+  outputs = inputs @ {nixpkgs, ...}: let
+    systems = ["aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux"];
+    forAllSystems = nixpkgs.lib.genAttrs systems;
+    environments = forAllSystems (system:
+      import ./nix/environment.nix {
         inherit inputs system;
       });
-    in {
-      packages = forAllSystems (system: environments.${system}.packages);
-      apps = forAllSystems (system: environments.${system}.apps);
-      checks = forAllSystems (system: environments.${system}.checks);
-      devShells = forAllSystems (system: { default = environments.${system}.shell; });
-    };
+  in {
+    packages = forAllSystems (system: environments.${system}.packages);
+    apps = forAllSystems (system: environments.${system}.apps);
+    checks = forAllSystems (system: environments.${system}.checks);
+    formatter = forAllSystems (system: environments.${system}.formatter);
+    devShells = forAllSystems (system: {default = environments.${system}.shell;});
+  };
 }
