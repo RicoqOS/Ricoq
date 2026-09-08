@@ -3,6 +3,7 @@
 #![forbid(missing_docs)]
 
 mod boot;
+mod errors;
 mod free_slots;
 mod object;
 mod vspace;

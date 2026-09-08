@@ -1,7 +1,4 @@
-//! Internal substrate API for Ricoq.
-
-#![no_std]
-#![forbid(missing_docs)]
+//! Internal substrate errors for Ricoq.
 
 /// Bootstrap failures that do not expose backend capability types.
 #[derive(Debug, PartialEq, Eq)]

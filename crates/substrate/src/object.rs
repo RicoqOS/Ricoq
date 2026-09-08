@@ -1,8 +1,8 @@
 //! Fixed-size kernel object creation from boot-time non-device Untypeds.
 
 use sel4::CapTypeForObjectOfFixedSize;
-use substrate_api::BootstrapError;
 
+use crate::errors::BootstrapError;
 use crate::free_slots::FreeSlots;
 
 pub(crate) fn allocate<T: CapTypeForObjectOfFixedSize>(

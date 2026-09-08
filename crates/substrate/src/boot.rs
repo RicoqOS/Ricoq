@@ -1,7 +1,6 @@
 //! Boot-time resources for single-threaded substrate initialization.
 
-use substrate_api::BootstrapError;
-
+use crate::errors::BootstrapError;
 use crate::free_slots::FreeSlots;
 use crate::vspace::Frame;
 
@@ -40,6 +39,7 @@ impl<'a> Bootstrap<'a> {
     /// Obtains the frame backing a page in the initial image.
     ///
     /// # Safety
+    ///
     /// `image_start` must be the page-aligned base loaded by the kernel
     /// loader. The caller must exclusively control this page's mapping and
     /// capability.

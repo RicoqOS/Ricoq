@@ -20,7 +20,5 @@ path = "tests/root-task/main.rs"
 harness = false
 
 [dependencies]
-substrate-api = { path = "../substrate-api" }
-
 sel4 = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
 sel4-root-task = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
