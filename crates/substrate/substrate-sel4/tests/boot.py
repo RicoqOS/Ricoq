@@ -17,6 +17,11 @@ MARKERS = (
     b"substrate: cspace ready",
     b"substrate: untyped ready",
     b"substrate: notification allocated",
+    b"vspace: frame allocated",
+    b"vspace: frame mapped",
+    b"vspace: memory verified",
+    b"vspace: frame unmapped",
+    b"vspace: image restored",
     b"TEST_RESULT: PASS",
 )
 

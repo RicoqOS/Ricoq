@@ -28,12 +28,21 @@ def main():
             b"substrate: cspace ready",
             b"substrate: untyped ready",
             b"substrate: notification allocated",
+            b"vspace: frame allocated",
+            b"vspace: frame mapped",
+            b"vspace: memory verified",
+            b"vspace: frame unmapped",
+            b"vspace: image restored",
             b"TEST_RESULT: PASS",
         ]
         if case.startswith("omit-"):
             del markers[int(case.removeprefix("omit-"))]
         elif case == "duplicate":
             markers.insert(1, markers[0])
+        elif case == "vspace-out-of-order":
+            markers[5], markers[6] = markers[6], markers[5]
+        elif case == "vspace-legacy":
+            del markers[4:-1]
         serial = b"\r\n".join(markers) + b"\r\n"
         prefix = b"\n".join(markers[:-1]) + b"\n"
         if case == "missing":
@@ -61,6 +70,8 @@ def main():
             "failed",
             "overflow",
             "marker-then-exit",
+            "vspace-out-of-order",
+            "vspace-legacy",
         ):
             return 0
         with server.accept()[0] as connection:

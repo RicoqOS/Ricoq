@@ -105,6 +105,7 @@
 
   vendor = scope.vendorLockfile {lockfile = ../Cargo.lock;};
   vendorConfig = scope.crateUtils.toTOMLFile "cargo-vendor.toml" vendor.configFragment;
+  substrateSel4 = ../crates/substrate/substrate-sel4;
 
   rustChecks = pkgs.runCommand "substrate-cargo-checks" (cargoEnvironment // {nativeBuildInputs = cargoInputs;}) ''
     cp -R ${../.} source
@@ -117,18 +118,26 @@
 
     cargo fmt --check
     cargo clippy --locked --workspace --all-targets --all-features --target ${rustTargetName} -- -D warnings
-    cargo test --locked --manifest-path crates/substrate/substrate-sel4/host-tests/Cargo.toml --target ${hostRustTarget}
-    cargo build --locked -p substrate-sel4 --target ${rustTargetName}
+    rustc --edition 2024 --test crates/substrate/substrate-sel4/src/free_slots.rs --target ${hostRustTarget} -o free-slots-tests
+    ./free-slots-tests
+    cargo build --locked -p substrate-sel4 --bin substrate-sel4 --target ${rustTargetName}
+    ${pkgs.python3}/bin/python3 crates/substrate/substrate-sel4/tests/image.py --production target/${rustTargetName}/debug/substrate-sel4.elf
+    cargo test --locked -p substrate-sel4 --test substrate-integration --no-run --target ${rustTargetName} --message-format=json > test-build.json
+    testElf="$(${pkgs.python3}/bin/python3 -c 'import json; print(next(m["executable"] for line in open("test-build.json") if (m := json.loads(line)).get("executable") and m["target"]["name"] == "substrate-integration"))')"
+    ${pkgs.python3}/bin/python3 crates/substrate/substrate-sel4/tests/image.py "$testElf"
 
     mkdir -p "$out/bin"
     cp target/${rustTargetName}/debug/substrate-sel4.elf "$out/bin/"
+    cp "$testElf" "$out/bin/substrate-integration.elf"
   '';
 
   rootTask = {elf = "${rustChecks}/bin/substrate-sel4.elf";};
   loaderImage = (world.mkSystem {inherit rootTask;}).loaderImage;
+  testImage = (world.mkSystem {rootTask.elf = "${rustChecks}/bin/substrate-integration.elf";}).loaderImage;
 
   qemuArgs = ["${pkgs.qemu}/bin/qemu-system-${target.architecture}"] ++ target.qemuArgs ++ ["-kernel" loaderImage];
   qemuCommand = lib.escapeShellArgs qemuArgs;
+  testCommand = lib.escapeShellArgs (["${pkgs.qemu}/bin/qemu-system-${target.architecture}"] ++ target.qemuArgs ++ ["-kernel" testImage]);
 
   qemu = pkgs.writeShellApplication {
     name = "core-qemu";
@@ -138,9 +147,9 @@
   test = pkgs.writeShellApplication {
     name = "core-test";
     text = ''
-      exec ${pkgs.python3}/bin/python3 ${../tests/boot.py} \
+      exec ${pkgs.python3}/bin/python3 ${substrateSel4}/tests/boot.py \
         --timeout ${toString target.timeoutSeconds} \
-        -- ${qemuCommand}
+        -- ${testCommand}
     '';
   };
 
@@ -167,7 +176,8 @@ in {
     '';
     harness = pkgs.runCommand "boot-harness-tests" {} ''
       export PYTHONDONTWRITEBYTECODE=1
-      ${pkgs.python3}/bin/python3 -m unittest discover -s ${../tests} -v
+      cd ${substrateSel4}/tests
+      ${pkgs.python3}/bin/python3 -m unittest discover -v
       touch "$out"
     '';
     boot = pkgs.runCommand "sel4-qemu-boot" {} ''

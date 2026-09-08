@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from boot import run
+from boot import MARKERS, run
 
 
 class BootTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class BootTests(unittest.TestCase):
         self.assertTrue(ok, reason)
 
     def test_every_stage_is_required_exactly_once(self):
-        for case in (*[f"omit-{index}" for index in range(5)], "duplicate"):
+        for case in (*[f"omit-{index}" for index in range(len(MARKERS))], "duplicate"):
             with self.subTest(case=case):
                 ok, _, reason = self.simulate(case)
                 self.assertFalse(ok)
