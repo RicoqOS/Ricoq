@@ -1,0 +1,21 @@
+[package]
+name = "substrate-sel4"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[[bin]]
+name = "substrate-sel4"
+path = "src/main.rs"
+test = false
+bench = false
+
+[lib]
+test = false
+bench = false
+
+[dependencies]
+substrate-api = { path = "../substrate-api" }
+
+sel4 = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }
+sel4-root-task = { git = "https://github.com/seL4/rust-sel4", rev = "891b59622306e94ad428193838f0d6214bb5c7aa" }

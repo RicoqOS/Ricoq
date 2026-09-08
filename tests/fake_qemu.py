@@ -23,17 +23,29 @@ def main():
             signal.pause()
         if case.startswith("exit-"):
             return 0 if case == "exit-zero" else 7
-        serial = b"BOOT_TEST: START\r\nTEST_RESULT: PASS\r\n"
+        markers = [
+            b"substrate: booting",
+            b"substrate: cspace ready",
+            b"substrate: untyped ready",
+            b"substrate: notification allocated",
+            b"TEST_RESULT: PASS",
+        ]
+        if case.startswith("omit-"):
+            del markers[int(case.removeprefix("omit-"))]
+        elif case == "duplicate":
+            markers.insert(1, markers[0])
+        serial = b"\r\n".join(markers) + b"\r\n"
+        prefix = b"\n".join(markers[:-1]) + b"\n"
         if case == "missing":
-            serial = b"BOOT_TEST: START\n"
+            serial = prefix
         elif case == "out-of-order":
-            serial = b"TEST_RESULT: PASS\nBOOT_TEST: START\n"
+            serial = b"TEST_RESULT: PASS\n" + prefix
         elif case == "substring":
-            serial = b"BOOT_TEST: START\nnot TEST_RESULT: PASS\n"
+            serial = prefix + b"not TEST_RESULT: PASS\n"
         elif case == "unterminated":
-            serial = b"BOOT_TEST: START\nTEST_RESULT: PASS"
+            serial = prefix + b"TEST_RESULT: PASS"
         elif case == "failed":
-            serial = b"BOOT_TEST: START\nTEST_RESULT: FAIL\n"
+            serial = prefix + b"TEST_RESULT: FAIL\n"
         elif case == "overflow":
             serial = b"x" * (1024 * 1024 + 1)
         if case == "fragmented":
@@ -41,7 +53,7 @@ def main():
                 emit(bytes([byte]))
         else:
             emit(serial)
-        if case in (
+        if case.startswith("omit-") or case == "duplicate" or case in (
             "missing",
             "out-of-order",
             "substring",

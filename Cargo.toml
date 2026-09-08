@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/substrate/substrate-api", "crates/substrate/substrate-sel4"]
+resolver = "2"

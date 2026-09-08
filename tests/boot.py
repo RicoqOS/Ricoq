@@ -12,7 +12,13 @@ from pathlib import Path
 
 
 OUTPUT_LIMIT = 1024 * 1024
-MARKERS = (b"BOOT_TEST: START", b"TEST_RESULT: PASS")
+MARKERS = (
+    b"substrate: booting",
+    b"substrate: cspace ready",
+    b"substrate: untyped ready",
+    b"substrate: notification allocated",
+    b"TEST_RESULT: PASS",
+)
 
 
 class BootError(Exception):

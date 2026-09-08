@@ -23,6 +23,13 @@ class BootTests(unittest.TestCase):
         ok, _, reason = self.simulate("fragmented")
         self.assertTrue(ok, reason)
 
+    def test_every_stage_is_required_exactly_once(self):
+        for case in (*[f"omit-{index}" for index in range(5)], "duplicate"):
+            with self.subTest(case=case):
+                ok, _, reason = self.simulate(case)
+                self.assertFalse(ok)
+                self.assertTrue(reason)
+
     def test_rejects_incomplete_boot_and_failed_shutdown(self):
         for case in (
             "exit-zero",
