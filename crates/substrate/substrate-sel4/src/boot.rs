@@ -1,89 +1,88 @@
-//! Substrate initialization routines and seL4 kernel object bootstrapping.
+//! Boot-time resources for single-threaded substrate initialization.
 
 use substrate_api::BootstrapError;
 
 use crate::free_slots::FreeSlots;
+use crate::vspace::Frame;
 
-/// A single allocation helper for retyping an untyped memory region into a
-/// notification capability.
-struct NotificationAllocator {
-    /// The target CSpace slot that will hold the newly created notification
-    /// capability.
-    slot: sel4::init_thread::Slot,
-    /// The untyped memory region used to back the notification object.
-    untyped: sel4::cap::Untyped,
+/// Owns allocation from the initial thread's free capability slots.
+/// Construct once from the entrypoint's BootInfo before allocating objects.
+pub struct Bootstrap<'a> {
+    bootinfo: &'a sel4::BootInfo,
+    slots: FreeSlots,
 }
 
-impl NotificationAllocator {
-    /// Retypes untyped memory into a notification object inside a slot.
+impl<'a> Bootstrap<'a> {
+    /// Initializes free-slot accounting from the root-task entrypoint ABI.
+    pub fn new(bootinfo: &'a sel4::BootInfo) -> Result<Self, BootstrapError> {
+        if bootinfo.empty().len() == 0 {
+            return Err(BootstrapError::NoFreeSlots);
+        }
+        Ok(Self {
+            bootinfo,
+            slots: FreeSlots::new(bootinfo.empty().range()),
+        })
+    }
+
+    /// Creates a notification from normal RAM.
+    pub fn allocate_notification(
+        &mut self,
+    ) -> Result<Notification, BootstrapError> {
+        crate::object::allocate(self.bootinfo, &mut self.slots)
+            .map(Notification)
+    }
+
+    /// Creates one base-page frame from normal RAM.
+    pub fn allocate_frame(&mut self) -> Result<Frame, BootstrapError> {
+        crate::object::allocate(self.bootinfo, &mut self.slots).map(Frame)
+    }
+
+    /// Obtains the frame backing a page in the initial image.
     ///
-    /// # Errors
-    ///
-    /// Returns [`BootstrapError::KernelAllocationFailed`] if seL4 retype
-    /// operation fails.
-    fn allocate(self) -> Result<sel4::cap::Notification, BootstrapError> {
-        self.untyped
-            .untyped_retype(
-                &sel4::ObjectBlueprint::Notification,
-                &sel4::init_thread::slot::CNODE
-                    .cap()
-                    .absolute_cptr_for_self(),
-                self.slot.index(),
-                1,
-            )
-            .map_err(|error| {
-                sel4::debug_println!("substrate: retype failed: {error:?}");
-                BootstrapError::KernelAllocationFailed
-            })?;
-        // The successful retype establishes the slot's capability type.
-        Ok(self.slot.downcast::<sel4::cap_type::Notification>().cap())
+    /// # Safety
+    /// `image_start` must be the page-aligned base loaded by the kernel
+    /// loader. The caller must exclusively control this page's mapping and
+    /// capability.
+    pub unsafe fn image_frame(
+        &self,
+        image_start: usize,
+        address: usize,
+    ) -> Result<Frame, BootstrapError> {
+        let offset = address
+            .checked_sub(image_start)
+            .ok_or(BootstrapError::InvalidImageRegion)?;
+        let frames = self.bootinfo.user_image_frames();
+        if !image_start.is_multiple_of(Frame::BYTES) ||
+            !address.is_multiple_of(Frame::BYTES) ||
+            offset / Frame::BYTES >= frames.len()
+        {
+            return Err(BootstrapError::InvalidImageRegion);
+        }
+        Ok(Frame(frames.index(offset / Frame::BYTES).cap()))
     }
 }
 
-/// Executes the core bootstrap sequence.
-///
-/// # Errors
-///
-/// Returns a [`BootstrapError`] if CSpace slots are exhausted.
-fn bootstrap(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
-    let mut slots = FreeSlots::new(bootinfo.empty().range());
-    let slot = slots
-        .allocate()
-        .map(sel4::init_thread::Slot::from_index)
-        .ok_or(BootstrapError::NoFreeSlots)?;
-    sel4::debug_println!("substrate: cspace ready");
+/// An owned kernel notification capability.
+pub struct Notification(sel4::cap::Notification);
 
-    let untyped_slots = bootinfo.untyped();
-    let (index, _) = bootinfo
-        .untyped_list()
-        .iter()
-        .enumerate()
-        .take(untyped_slots.len())
-        .find(|(_, descriptor)| {
-            !descriptor.is_device() &&
-                descriptor.size_bits() >=
-                    sel4::ObjectBlueprint::Notification
-                        .physical_size_bits()
-        })
-        .ok_or(BootstrapError::NoKernelMemory)?;
-    let untyped = untyped_slots.index(index).cap();
-    sel4::debug_println!("substrate: untyped ready");
+impl Notification {
+    /// Signals this notification.
+    pub fn signal(&self) {
+        self.0.signal();
+    }
 
-    let notification = NotificationAllocator { slot, untyped }.allocate()?;
-    notification.signal();
-    let (_info, _badge) = notification.wait();
-    sel4::debug_println!("substrate: notification allocated");
-    Ok(())
+    /// Blocks until this notification is signalled.
+    pub fn wait(&self) {
+        self.0.wait();
+    }
 }
 
-/// Consumes the initial thread's bootstrap lifecycle and suspends permanently.
+/// Initializes bootstrap resources and suspends the initial thread.
 pub fn run(bootinfo: &sel4::BootInfo) -> ! {
-    sel4::debug_println!("substrate: booting");
-    match bootstrap(bootinfo) {
-        Ok(()) => sel4::debug_println!("TEST_RESULT: PASS"),
+    match Bootstrap::new(bootinfo) {
+        Ok(_bootstrap) => sel4::debug_println!("substrate: ready"),
         Err(error) => {
-            sel4::debug_println!("substrate: bootstrap failed: {:?}", error);
-            sel4::debug_println!("TEST_RESULT: FAIL");
+            sel4::debug_println!("substrate: bootstrap failed: {error:?}")
         },
     }
     sel4::init_thread::suspend_self()

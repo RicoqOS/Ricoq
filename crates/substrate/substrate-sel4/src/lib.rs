@@ -4,4 +4,8 @@
 
 mod boot;
 mod free_slots;
-pub use boot::run;
+mod object;
+mod vspace;
+
+pub use boot::{Bootstrap, Notification, run};
+pub use vspace::Frame;

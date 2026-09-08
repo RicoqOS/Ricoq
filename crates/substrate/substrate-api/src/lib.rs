@@ -13,4 +13,10 @@ pub enum BootstrapError {
     NoKernelMemory,
     /// Retyping or instantiating the kernel object failed.
     KernelAllocationFailed,
+    /// A page address or image region is invalid.
+    InvalidImageRegion,
+    /// Mapping a frame into the bootstrap address space failed.
+    FrameMappingFailed,
+    /// Removing a frame mapping failed.
+    FrameUnmappingFailed,
 }
