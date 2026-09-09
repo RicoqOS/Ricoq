@@ -59,6 +59,7 @@ impl TaskLayout {
     }
 }
 
+#[cfg(not(test))]
 mod platform {
     use core::ops::Range;
 
@@ -258,6 +259,7 @@ mod platform {
     pub use crate::cspace::DelegatedCapability;
 }
 
+#[cfg(not(test))]
 pub use platform::{DelegatedCapability, SharedCode, Task, TaskConfig};
 
 #[cfg(test)]
