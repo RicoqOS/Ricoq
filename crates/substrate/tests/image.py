@@ -1,4 +1,4 @@
-"""Check the test-page/BootInfo frame-index contract in the actual linked ELF."""
+"""Check task-code, scratch-page, and BootInfo contracts in the linked ELF."""
 
 import struct
 import sys
@@ -27,11 +27,18 @@ def check(path):
 
     names = section_data(sections[header[13]])
     by_name = {name(names, section[0]): section for section in sections}
-    assert ".vspace_test" in by_name, "missing dedicated test-page section"
-    page = by_name[".vspace_test"]
-    assert page[3] % 4096 == 0 and page[5] == 4096, "test page must be one granule"
-    assert page[2] & 3 == 3 and page[1] == 1, "test page must be writable PROGBITS"
-    assert section_data(page) == b"\xee" * 4096, "wrong test-page storage"
+    assert ".task_code" in by_name, "missing dedicated task-code section"
+    assert ".task_scratch" in by_name, "missing dedicated scratch section"
+    code = by_name[".task_code"]
+    scratch = by_name[".task_scratch"]
+    for section in (code, scratch):
+        assert section[3] % 4096 == 0, "task section must be page aligned"
+        assert section[5] == 4096, "task section must occupy one granule"
+        assert section[1] == 1, "task section must be file-backed PROGBITS"
+    assert code[2] & 6 == 6 and not code[2] & 1, "task code must be read/execute"
+    assert scratch[2] & 3 == 3 and not scratch[2] & 4, "scratch must be read/write"
+    assert section_data(code) != b"\0" * 4096, "task code must not be empty"
+    assert section_data(scratch) == b"\xee" * 4096, "wrong scratch storage"
 
     symbols = {}
     for section in sections:
@@ -46,28 +53,32 @@ def check(path):
     image_start = min(segment[3] for segment in loads)
     assert image_start % 4096 == 0, "image base must be page aligned"
     assert symbols["__root_image_start"] == image_start, "wrong BootInfo frame zero"
-    assert symbols["__vspace_test_start"] == page[3], "wrong test-page start"
-    assert symbols["__vspace_test_end"] == page[3] + 4096, "wrong test-page end"
-    assert any(
-        segment[1] & 6 == 6
-        and segment[3] <= page[3]
-        and page[3] + 4096 <= segment[3] + segment[5]
-        and page[4] - segment[2] == page[3] - segment[3]
-        for segment in loads
-    ), "test page must be file-backed in a readable/writable PT_LOAD"
-    for section in sections:
-        if section is page or not section[2] & 2 or section[5] == 0:
-            continue
-        assert (
-            section[3] + section[5] <= page[3]
-            or section[3] >= page[3] + 4096
-        ), "live section overlaps the test page"
+    for section, prefix, flags in (
+        (code, "__task_code", 5),
+        (scratch, "__task_scratch", 6),
+    ):
+        assert symbols[f"{prefix}_start"] == section[3], f"wrong {prefix} start"
+        assert symbols[f"{prefix}_end"] == section[3] + 4096, f"wrong {prefix} end"
+        assert any(
+            segment[1] & flags == flags
+            and segment[3] <= section[3]
+            and section[3] + 4096 <= segment[3] + segment[5]
+            and section[4] - segment[2] == section[3] - segment[3]
+            for segment in loads
+        ), f"{prefix} must be file-backed in a matching PT_LOAD"
+        for other in sections:
+            if other is section or not other[2] & 2 or other[5] == 0:
+                continue
+            assert (
+                other[3] + other[5] <= section[3]
+                or other[3] >= section[3] + 4096
+            ), f"live section overlaps {prefix}"
     print("IMAGE_LAYOUT: PASS")
 
 
 def check_production(path):
     data = Path(path).read_bytes()
-    for marker in (b"TEST_RESULT:", b".vspace_test", b"vspace: frame allocated"):
+    for marker in (b"TEST_RESULT:", b".task_code", b"task: resources constructed"):
         assert marker not in data, "production image contains the mapping exercise"
     print("PRODUCTION_IMAGE: PASS")
 

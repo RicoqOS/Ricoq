@@ -25,24 +25,22 @@ def main():
             return 0 if case == "exit-zero" else 7
         markers = [
             b"substrate: booting",
-            b"substrate: cspace ready",
-            b"substrate: untyped ready",
-            b"substrate: notification allocated",
-            b"vspace: frame allocated",
-            b"vspace: frame mapped",
-            b"vspace: memory verified",
-            b"vspace: frame unmapped",
-            b"vspace: image restored",
+            b"task: resources constructed",
+            b"task: cspaces and vspaces isolated",
+            b"task: capability isolation verified",
+            b"task: independent execution verified",
+            b"task: private memory isolation verified",
+            b"task: per-task IPC buffers verified",
             b"TEST_RESULT: PASS",
         ]
         if case.startswith("omit-"):
             del markers[int(case.removeprefix("omit-"))]
         elif case == "duplicate":
             markers.insert(1, markers[0])
-        elif case == "vspace-out-of-order":
+        elif case == "task-out-of-order":
             markers[5], markers[6] = markers[6], markers[5]
-        elif case == "vspace-legacy":
-            del markers[4:-1]
+        elif case == "task-legacy":
+            del markers[1:-1]
         serial = b"\r\n".join(markers) + b"\r\n"
         prefix = b"\n".join(markers[:-1]) + b"\n"
         if case == "missing":
@@ -70,8 +68,8 @@ def main():
             "failed",
             "overflow",
             "marker-then-exit",
-            "vspace-out-of-order",
-            "vspace-legacy",
+            "task-out-of-order",
+            "task-legacy",
         ):
             return 0
         with server.accept()[0] as connection:

@@ -36,6 +36,80 @@ impl<'a> Bootstrap<'a> {
         crate::object::allocate(self.bootinfo, &mut self.slots).map(Frame)
     }
 
+    /// Allocates an internal fixed-size kernel object.
+    pub(crate) fn allocate_object<T>(
+        &mut self,
+    ) -> Result<sel4::Cap<T>, BootstrapError>
+    where
+        T: sel4::CapTypeForObjectOfFixedSize,
+    {
+        crate::object::allocate(self.bootinfo, &mut self.slots)
+    }
+
+    /// Allocates an internal variable-size kernel object.
+    pub(crate) fn allocate_variable_object<T>(
+        &mut self,
+        size_bits: usize,
+    ) -> Result<sel4::Cap<T>, BootstrapError>
+    where
+        T: sel4::CapTypeForObjectOfVariableSize,
+    {
+        crate::object::allocate_variable(
+            self.bootinfo,
+            &mut self.slots,
+            size_bits,
+        )
+    }
+
+    /// Allocates an architecture-selected object through the shared path.
+    pub(crate) fn allocate_blueprint(
+        &mut self,
+        blueprint: sel4::ObjectBlueprint,
+    ) -> Result<sel4::cap::Unspecified, BootstrapError> {
+        crate::object::allocate_blueprint(
+            self.bootinfo,
+            &mut self.slots,
+            blueprint,
+        )
+    }
+
+    /// Derives a root-held cap while preserving sequential slot ownership.
+    pub(crate) fn copy_cap<T: sel4::CapType>(
+        &mut self,
+        source: sel4::Cap<T>,
+        rights: sel4::CapRights,
+    ) -> Result<sel4::Cap<T>, BootstrapError> {
+        crate::cspace::copy_to_root(&mut self.slots, source, rights)
+    }
+
+    /// Marks the start of an atomic construction sequence.
+    pub(crate) fn checkpoint(&self) -> usize {
+        self.slots.checkpoint()
+    }
+
+    /// Returns the resource slots retained since `checkpoint`.
+    pub(crate) fn committed_slots(
+        &self,
+        checkpoint: usize,
+    ) -> Result<core::ops::Range<usize>, BootstrapError> {
+        self.slots
+            .allocated_since(checkpoint)
+            .ok_or(BootstrapError::RollbackFailed)
+    }
+
+    /// Deletes a failed allocation suffix before making its slots reusable.
+    pub(crate) fn rollback(
+        &mut self,
+        checkpoint: usize,
+    ) -> Result<(), BootstrapError> {
+        let slots = self.committed_slots(checkpoint)?;
+        crate::cspace::delete_root_slots(slots)?;
+        if !self.slots.rewind(checkpoint) {
+            return Err(BootstrapError::RollbackFailed);
+        }
+        Ok(())
+    }
+
     /// Obtains the frame backing a page in the initial image.
     ///
     /// # Safety
@@ -66,6 +140,11 @@ impl<'a> Bootstrap<'a> {
 pub struct Notification(sel4::cap::Notification);
 
 impl Notification {
+    /// Returns the root-held capability for explicit delegation.
+    pub(crate) fn cap(&self) -> sel4::cap::Notification {
+        self.0
+    }
+
     /// Signals this notification.
     pub fn signal(&self) {
         self.0.signal();

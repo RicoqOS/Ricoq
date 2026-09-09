@@ -105,7 +105,7 @@
 
   vendor = scope.vendorLockfile {lockfile = ../Cargo.lock;};
   vendorConfig = scope.crateUtils.toTOMLFile "cargo-vendor.toml" vendor.configFragment;
-  substrateSel4 = ../crates/substrate/substrate-sel4;
+  substrateSel4 = ../crates/substrate;
 
   rustChecks = pkgs.runCommand "substrate-cargo-checks" (cargoEnvironment // {nativeBuildInputs = cargoInputs;}) ''
     cp -R ${../.} source
@@ -118,13 +118,15 @@
 
     cargo fmt --check
     cargo clippy --locked --workspace --all-targets --all-features --target ${rustTargetName} -- -D warnings
-    rustc --edition 2024 --test crates/substrate/substrate-sel4/src/free_slots.rs --target ${hostRustTarget} -o free-slots-tests
+    rustc --edition 2024 --test crates/substrate/src/free_slots.rs --target ${hostRustTarget} -o free-slots-tests
     ./free-slots-tests
+    rustc --edition 2024 --test crates/substrate/src/task.rs --target ${hostRustTarget} -o task-tests
+    ./task-tests
     cargo build --locked -p substrate-sel4 --bin substrate-sel4 --target ${rustTargetName}
-    ${pkgs.python3}/bin/python3 crates/substrate/substrate-sel4/tests/image.py --production target/${rustTargetName}/debug/substrate-sel4.elf
+    ${pkgs.python3}/bin/python3 crates/substrate/tests/image.py --production target/${rustTargetName}/debug/substrate-sel4.elf
     cargo test --locked -p substrate-sel4 --test substrate-integration --no-run --target ${rustTargetName} --message-format=json > test-build.json
     testElf="$(${pkgs.python3}/bin/python3 -c 'import json; print(next(m["executable"] for line in open("test-build.json") if (m := json.loads(line)).get("executable") and m["target"]["name"] == "substrate-integration"))')"
-    ${pkgs.python3}/bin/python3 crates/substrate/substrate-sel4/tests/image.py "$testElf"
+    ${pkgs.python3}/bin/python3 crates/substrate/tests/image.py "$testElf"
 
     mkdir -p "$out/bin"
     cp target/${rustTargetName}/debug/substrate-sel4.elf "$out/bin/"
