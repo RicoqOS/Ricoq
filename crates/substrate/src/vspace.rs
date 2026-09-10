@@ -6,6 +6,30 @@ use crate::errors::BootstrapError;
 /// A frame capability whose mappings are managed explicitly by its owner.
 pub struct Frame(pub(crate) sel4::cap::Granule);
 
+/// A root-held capability for one frame mapping in a task VSpace.
+pub struct TaskMapping {
+    mapping: sel4::cap::Granule,
+    root_slot: usize,
+}
+
+impl TaskMapping {
+    /// Removes this mapping from the task VSpace.
+    ///
+    /// # Safety
+    ///
+    /// The task must be stopped and no live access may depend on this mapping.
+    pub unsafe fn unmap(&self) -> Result<(), BootstrapError> {
+        self.mapping
+            .frame_unmap()
+            .map_err(|_| BootstrapError::FrameUnmappingFailed)
+    }
+
+    /// Returns the explicitly retained root CSpace slot.
+    pub fn root_slot(&self) -> usize {
+        self.root_slot
+    }
+}
+
 impl Frame {
     /// Size and required virtual-address alignment of a base page.
     pub const BYTES: usize = sel4::FrameObjectType::GRANULE.bytes();
@@ -57,6 +81,7 @@ impl VSpace {
     pub(crate) fn create(
         bootstrap: &mut Bootstrap<'_>,
         page_addresses: &[usize],
+        reserved_pages: &[usize],
     ) -> Result<Self, BootstrapError> {
         let root = bootstrap.allocate_object::<sel4::cap_type::VSpace>()?;
         sel4::init_thread::slot::ASID_POOL
@@ -64,7 +89,11 @@ impl VSpace {
             .asid_pool_assign(root)
             .map_err(|_| BootstrapError::VSpaceCreationFailed)?;
         let vspace = Self { root };
-        vspace.map_translation_tables(bootstrap, page_addresses)?;
+        vspace.map_translation_tables(
+            bootstrap,
+            page_addresses,
+            reserved_pages,
+        )?;
         Ok(vspace)
     }
 
@@ -73,6 +102,7 @@ impl VSpace {
         &self,
         bootstrap: &mut Bootstrap<'_>,
         page_addresses: &[usize],
+        reserved_pages: &[usize],
     ) -> Result<(), BootstrapError> {
         for level in 1..sel4::vspace_levels::NUM_LEVELS {
             let span_bits = sel4::vspace_levels::span_bits(level);
@@ -81,10 +111,16 @@ impl VSpace {
             let span = 1usize
                 .checked_shl(shift)
                 .ok_or(BootstrapError::InvalidTaskConfiguration)?;
-            for (index, address) in page_addresses.iter().enumerate() {
+            for (index, address) in page_addresses
+                .iter()
+                .chain(reserved_pages.iter())
+                .enumerate()
+            {
                 let table_base = address / span;
-                if page_addresses[..index]
+                if page_addresses
                     .iter()
+                    .chain(reserved_pages.iter())
+                    .take(index)
                     .any(|prior| prior / span == table_base)
                 {
                     continue;
@@ -136,5 +172,11 @@ impl VSpace {
     /// Returns the parent-held VSpace root capability.
     pub(crate) fn root(&self) -> sel4::cap::VSpace {
         self.root
+    }
+}
+
+impl TaskMapping {
+    pub(crate) fn new(mapping: sel4::cap::Granule, root_slot: usize) -> Self {
+        Self { mapping, root_slot }
     }
 }
