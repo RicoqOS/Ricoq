@@ -5,6 +5,7 @@ use core::ops::Range;
 use crate::boot::{Bootstrap, Notification};
 use crate::errors::BootstrapError;
 use crate::free_slots::FreeSlots;
+use crate::ipc::FaultRoute;
 
 /// A capability to install explicitly in a task's CSpace.
 #[derive(Clone)]
@@ -48,8 +49,9 @@ impl CSpace {
         bootstrap: &mut Bootstrap<'_>,
         size_bits: usize,
         capabilities: &[DelegatedCapability],
+        fault_route: Option<&FaultRoute<'_>>,
     ) -> Result<Self, BootstrapError> {
-        validate(size_bits, capabilities)?;
+        validate(size_bits, capabilities, fault_route)?;
         let root = bootstrap
             .allocate_variable_object::<sel4::cap_type::CNode>(size_bits)?;
         let cspace = Self { root, size_bits };
@@ -67,6 +69,26 @@ impl CSpace {
                 .absolute_cptr(capability.source);
             destination
                 .mint(&source, capability.rights.clone(), capability.badge)
+                .map_err(|_| BootstrapError::CSpaceCreationFailed)?;
+        }
+        if let Some(route) = fault_route {
+            let destination_bits = route
+                .child_slot
+                .try_into()
+                .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+            let destination = root.absolute_cptr_from_bits_with_depth(
+                destination_bits,
+                size_bits,
+            );
+            let source = sel4::init_thread::slot::CNODE
+                .cap()
+                .absolute_cptr(route.endpoint.cap());
+            let rights = sel4::CapRightsBuilder::none()
+                .write(true)
+                .grant(true)
+                .build();
+            destination
+                .mint(&source, rights, route.badge.raw())
                 .map_err(|_| BootstrapError::CSpaceCreationFailed)?;
         }
         Ok(cspace)
@@ -87,6 +109,7 @@ impl CSpace {
 fn validate(
     size_bits: usize,
     capabilities: &[DelegatedCapability],
+    fault_route: Option<&FaultRoute<'_>>,
 ) -> Result<(), BootstrapError> {
     let shift = u32::try_from(size_bits)
         .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
@@ -106,6 +129,16 @@ fn validate(
         {
             return Err(BootstrapError::InvalidTaskConfiguration);
         }
+    }
+    if let Some(route) = fault_route &&
+        (route.child_slot == 0 ||
+            route.child_slot >= capacity ||
+            route.endpoint.cap().bits() == 0 ||
+            capabilities.iter().any(|capability| {
+                capability.destination == route.child_slot
+            }))
+    {
+        return Err(BootstrapError::InvalidTaskConfiguration);
     }
     Ok(())
 }

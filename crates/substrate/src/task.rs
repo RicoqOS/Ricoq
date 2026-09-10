@@ -22,6 +22,7 @@ impl TaskLayout {
         private_memory_address: usize,
         stack_address: usize,
         ipc_buffer_address: usize,
+        reserved_pages: &[usize],
     ) -> Result<Self, LayoutError> {
         if page_size == 0 || !page_size.is_power_of_two() {
             return Err(LayoutError::InvalidPageSize);
@@ -40,6 +41,19 @@ impl TaskLayout {
                 .checked_add(page_size)
                 .ok_or(LayoutError::AddressOverflow)?;
             if addresses[..index].contains(address) {
+                return Err(LayoutError::OverlappingPages);
+            }
+        }
+        for (index, address) in reserved_pages.iter().enumerate() {
+            if !address.is_multiple_of(page_size) {
+                return Err(LayoutError::UnalignedAddress);
+            }
+            address
+                .checked_add(page_size)
+                .ok_or(LayoutError::AddressOverflow)?;
+            if addresses.contains(address) ||
+                reserved_pages[..index].contains(address)
+            {
                 return Err(LayoutError::OverlappingPages);
             }
         }
@@ -67,8 +81,9 @@ mod platform {
     use crate::boot::Bootstrap;
     use crate::cspace::CSpace;
     use crate::errors::BootstrapError;
-    use crate::thread::{Thread, ThreadConfig};
-    use crate::vspace::{Frame, VSpace};
+    use crate::ipc::FaultRoute;
+    use crate::thread::{Registers, Thread, ThreadConfig};
+    use crate::vspace::{Frame, TaskMapping, VSpace};
 
     /// One read-only executable page shared with a task.
     pub struct SharedCode<'a> {
@@ -92,10 +107,15 @@ mod platform {
         pub stack_address: usize,
         /// Page-aligned virtual address for the task's IPC buffer page.
         pub ipc_buffer_address: usize,
+        /// Page-aligned addresses with translation tables but no mapped
+        /// frame.
+        pub reserved_pages: &'a [usize],
         /// Initial values for the first four architecture argument registers.
         pub initial_arguments: [usize; 4],
         /// Capabilities explicitly installed in the otherwise empty CSpace.
         pub delegated_capabilities: &'a [DelegatedCapability],
+        /// Optional badged route for kernel-delivered task faults.
+        pub fault_route: Option<FaultRoute<'a>>,
     }
 
     /// Parent-owned handles for one constructed seL4 protection domain.
@@ -118,6 +138,58 @@ mod platform {
         /// Suspends this task without affecting any other task.
         pub fn suspend(&self) -> Result<(), BootstrapError> {
             self.thread.suspend()
+        }
+
+        /// Resumes this task without affecting any other task.
+        pub fn resume(&self) -> Result<(), BootstrapError> {
+            self.thread.start()
+        }
+
+        /// Reads the task register state.
+        pub fn read_registers(&self) -> Result<Registers, BootstrapError> {
+            self.thread.read_registers()
+        }
+
+        /// Writes the task's complete register state without resuming it.
+        pub fn write_registers(
+            &self,
+            registers: &mut Registers,
+        ) -> Result<(), BootstrapError> {
+            self.thread.write_registers(registers)
+        }
+
+        /// Maps a recovery frame into a previously prepared task address.
+        ///
+        /// # Safety
+        ///
+        /// The task must be blocked or suspended, `address` must be unmapped,
+        /// and no live task reference may cover the page until it is mapped.
+        pub unsafe fn map_recovery_frame(
+            &self,
+            bootstrap: &mut Bootstrap<'_>,
+            frame: &Frame,
+            address: usize,
+        ) -> Result<TaskMapping, BootstrapError> {
+            let checkpoint = bootstrap.checkpoint();
+            let mapping = match self.vspace.map_frame(
+                bootstrap,
+                frame,
+                address,
+                sel4::CapRights::read_write(),
+            ) {
+                Ok(mapping) => mapping,
+                Err(error) => {
+                    bootstrap.rollback(checkpoint)?;
+                    return Err(error);
+                },
+            };
+            let slots = bootstrap.committed_slots(checkpoint)?;
+            let root_slot = slots
+                .clone()
+                .next()
+                .filter(|_| slots.len() == 1)
+                .ok_or(BootstrapError::RollbackFailed)?;
+            Ok(TaskMapping::new(mapping, root_slot))
         }
 
         /// Returns the parent-held capability to this task's CSpace root.
@@ -164,6 +236,7 @@ mod platform {
                 config.private_memory_address,
                 config.stack_address,
                 config.ipc_buffer_address,
+                config.reserved_pages,
             )
             .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
             let checkpoint = self.checkpoint();
@@ -187,6 +260,7 @@ mod platform {
                 self,
                 config.cspace_size_bits,
                 config.delegated_capabilities,
+                config.fault_route.as_ref(),
             )?;
             let page_addresses = [
                 config.code.address,
@@ -194,7 +268,8 @@ mod platform {
                 config.stack_address,
                 config.ipc_buffer_address,
             ];
-            let vspace = VSpace::create(self, &page_addresses)?;
+            let vspace =
+                VSpace::create(self, &page_addresses, config.reserved_pages)?;
             vspace.map_frame(
                 self,
                 config.code.frame,
@@ -223,6 +298,15 @@ mod platform {
                 config.ipc_buffer_address,
                 sel4::CapRights::read_write(),
             )?;
+            let fault_endpoint = match config.fault_route {
+                Some(route) => {
+                    let bits = route.child_slot.try_into().map_err(|_| {
+                        BootstrapError::InvalidTaskConfiguration
+                    })?;
+                    sel4::CPtr::from_bits(bits)
+                },
+                None => sel4::init_thread::slot::NULL.cptr(),
+            };
 
             let thread = Thread::create(
                 self,
@@ -234,6 +318,7 @@ mod platform {
                     entry: config.code.entry,
                     stack_pointer: layout.stack_pointer,
                     arguments: config.initial_arguments,
+                    fault_endpoint,
                 },
             )?;
             let root_slots = self.committed_slots(checkpoint)?;
@@ -270,7 +355,7 @@ mod tests {
 
     /// Provides one valid baseline for focused invariant tests.
     fn valid() -> Result<TaskLayout, LayoutError> {
-        TaskLayout::validate(PAGE, 0x1000, 0x1000, 0x2000, 0x3000, 0x4000)
+        TaskLayout::validate(PAGE, 0x1000, 0x1000, 0x2000, 0x3000, 0x4000, &[])
     }
 
     #[test]
@@ -283,13 +368,29 @@ mod tests {
     /// Rejects layouts the kernel cannot map as base pages.
     fn rejects_invalid_page_size_and_alignment() {
         assert_eq!(
-            TaskLayout::validate(0, 0x1000, 0x1000, 0x2000, 0x3000, 0x4000)
-                .map(|_| ()),
+            TaskLayout::validate(
+                0,
+                0x1000,
+                0x1000,
+                0x2000,
+                0x3000,
+                0x4000,
+                &[]
+            )
+            .map(|_| ()),
             Err(LayoutError::InvalidPageSize),
         );
         assert_eq!(
-            TaskLayout::validate(PAGE, 0x1001, 0x1000, 0x2000, 0x3000, 0x4000)
-                .map(|_| ()),
+            TaskLayout::validate(
+                PAGE,
+                0x1001,
+                0x1000,
+                0x2000,
+                0x3000,
+                0x4000,
+                &[]
+            )
+            .map(|_| ()),
             Err(LayoutError::UnalignedAddress),
         );
     }
@@ -305,13 +406,22 @@ mod tests {
                 0x2000,
                 0x3000,
                 0x4000,
+                &[],
             )
             .map(|_| ()),
             Err(LayoutError::AddressOverflow),
         );
         assert_eq!(
-            TaskLayout::validate(PAGE, 0x1000, 0x1000, 0x2000, 0x2000, 0x4000)
-                .map(|_| ()),
+            TaskLayout::validate(
+                PAGE,
+                0x1000,
+                0x1000,
+                0x2000,
+                0x2000,
+                0x4000,
+                &[]
+            )
+            .map(|_| ()),
             Err(LayoutError::OverlappingPages),
         );
     }
@@ -322,10 +432,40 @@ mod tests {
         for entry in [0x0ffc, 0x2000, 0x1002] {
             assert_eq!(
                 TaskLayout::validate(
-                    PAGE, 0x1000, entry, 0x2000, 0x3000, 0x4000,
+                    PAGE,
+                    0x1000,
+                    entry,
+                    0x2000,
+                    0x3000,
+                    0x4000,
+                    &[],
                 )
                 .map(|_| ()),
                 Err(LayoutError::InvalidEntry),
+            );
+        }
+    }
+
+    #[test]
+    fn validates_reserved_unmapped_pages() {
+        assert!(
+            TaskLayout::validate(
+                PAGE,
+                0x1000,
+                0x1000,
+                0x2000,
+                0x3000,
+                0x4000,
+                &[0x5000, 0x6000],
+            )
+            .is_ok()
+        );
+        for reserved in [&[0x2000][..], &[0x5001][..], &[0x5000, 0x5000][..]] {
+            assert!(
+                TaskLayout::validate(
+                    PAGE, 0x1000, 0x1000, 0x2000, 0x3000, 0x4000, reserved,
+                )
+                .is_err()
             );
         }
     }

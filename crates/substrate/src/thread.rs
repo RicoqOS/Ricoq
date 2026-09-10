@@ -9,12 +9,62 @@ pub(crate) struct Thread {
     tcb: sel4::cap::Tcb,
 }
 
+/// A task user-register context.
+pub struct Registers(sel4::UserContext);
+
+impl Registers {
+    /// Returns the current program counter.
+    pub fn instruction_pointer(&self) -> u64 {
+        *self.0.pc()
+    }
+
+    /// Updates the program counter for the next register-state write.
+    pub fn set_instruction_pointer(&mut self, value: u64) {
+        *self.0.pc_mut() = value;
+    }
+
+    /// Returns the current stack pointer.
+    pub fn stack_pointer(&self) -> u64 {
+        *self.0.sp()
+    }
+
+    /// Updates the stack pointer for the next register-state write.
+    pub fn set_stack_pointer(&mut self, value: u64) {
+        *self.0.sp_mut() = value;
+    }
+
+    /// Returns general-purpose register X0 through X30.
+    pub fn general_register(
+        &self,
+        index: usize,
+    ) -> Result<u64, BootstrapError> {
+        if index >= 31 {
+            return Err(BootstrapError::InvalidRegister);
+        }
+        Ok(*self.0.gpr(index))
+    }
+
+    /// Updates general-purpose register X0 through X30.
+    pub fn set_general_register(
+        &mut self,
+        index: usize,
+        value: u64,
+    ) -> Result<(), BootstrapError> {
+        if index >= 31 {
+            return Err(BootstrapError::InvalidRegister);
+        }
+        *self.0.gpr_mut(index) = value;
+        Ok(())
+    }
+}
+
 pub(crate) struct ThreadConfig {
     pub(crate) ipc_buffer_address: usize,
     pub(crate) ipc_buffer_mapping: sel4::cap::Granule,
     pub(crate) entry: usize,
     pub(crate) stack_pointer: usize,
     pub(crate) arguments: [usize; 4],
+    pub(crate) fault_endpoint: sel4::CPtr,
 }
 
 impl Thread {
@@ -39,7 +89,7 @@ impl Thread {
             .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
         let tcb = bootstrap.allocate_object::<sel4::cap_type::Tcb>()?;
         tcb.tcb_configure(
-            sel4::init_thread::slot::NULL.cptr(),
+            config.fault_endpoint,
             cspace.root(),
             cspace.root_data(),
             vspace.root(),
@@ -73,5 +123,23 @@ impl Thread {
         self.tcb
             .tcb_suspend()
             .map_err(|_| BootstrapError::ThreadControlFailed)
+    }
+
+    /// Reads all registers.
+    pub(crate) fn read_registers(&self) -> Result<Registers, BootstrapError> {
+        self.tcb
+            .tcb_read_all_registers(false)
+            .map(Registers)
+            .map_err(|_| BootstrapError::RegisterReadFailed)
+    }
+
+    /// Writes all registers.
+    pub(crate) fn write_registers(
+        &self,
+        registers: &mut Registers,
+    ) -> Result<(), BootstrapError> {
+        self.tcb
+            .tcb_write_all_registers(false, &mut registers.0)
+            .map_err(|_| BootstrapError::RegisterWriteFailed)
     }
 }

@@ -27,6 +27,12 @@ pub enum BootstrapError {
     ThreadConfigurationFailed,
     /// Starting or suspending a task failed.
     ThreadControlFailed,
+    /// Reading a task's architectural register state failed.
+    RegisterReadFailed,
+    /// Writing a task's architectural register state failed.
+    RegisterWriteFailed,
+    /// A requested architectural register index is not exposed.
+    InvalidRegister,
     /// Cleanup after failed construction could not restore slot accounting.
     RollbackFailed,
 }
