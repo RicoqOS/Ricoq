@@ -31,6 +31,11 @@ def main():
             b"task: independent execution verified",
             b"task: private memory isolation verified",
             b"task: per-task IPC buffers verified",
+            b"fault: routes distinguished",
+            b"fault: VM context decoded",
+            b"fault: register control verified",
+            b"fault: VM recovery continued",
+            b"fault: unknown syscall decoded",
             b"TEST_RESULT: PASS",
         ]
         if case.startswith("omit-"):

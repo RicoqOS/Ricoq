@@ -8,17 +8,25 @@ use core::ptr;
 
 use sel4_root_task::root_task;
 use substrate_sel4::{
-    Bootstrap, BootstrapError, DelegatedCapability, Frame, SharedCode,
-    TaskConfig,
+    Bootstrap, BootstrapError, DelegatedCapability, Fault, FaultBadge,
+    FaultBadgeError, FaultRoute, Frame, SharedCode, TaskConfig,
 };
 
 const TASK_CODE_ADDRESS: usize = 0x0100_0000;
 const PRIVATE_ADDRESS: usize = 0x0200_0000;
 const STACK_ADDRESS: usize = 0x0200_1000;
 const IPC_BUFFER_ADDRESS: usize = 0x0200_2000;
+const MISSING_PAGE_ADDRESS: usize = 0x0200_3000;
 const TASK_ONE_VALUE: usize = 0x1111_1111_1111_1111;
 const TASK_TWO_VALUE: usize = 0x2222_2222_2222_2222;
+const VM_INITIAL_VALUE: usize = 0x3333_3333_3333_3333;
+const VM_RECOVERED_VALUE: usize = 0x4444_4444_4444_4444;
 const COMPLETION_SLOT: usize = 1;
+const FAULT_SLOT: usize = 3;
+const VM_FAULT_BADGE: sel4::Word = 0x41;
+const UNKNOWN_SYSCALL_BADGE: sel4::Word = 0x42;
+const UNKNOWN_SYSCALL_NUMBER: sel4::Word = 0x123;
+const MISSING_PAGES: [usize; 1] = [MISSING_PAGE_ADDRESS];
 const UNDELEGATED_SLOT: sel4::Word = 2;
 const PROBE_SLOT: sel4::Word = 3;
 
@@ -40,6 +48,34 @@ isolated_task_entry:
 1:
     wfe
     b 1b
+
+    .global vm_fault_task_entry
+vm_fault_task_entry:
+    str x1, [x0]
+    mov x0, #1
+    mov x1, #0
+    mov x7, x3
+    svc #0
+2:
+    wfe
+    b 2b
+
+    .global unknown_syscall_task_entry
+unknown_syscall_task_entry:
+    mov x0, #0x11
+    mov x1, #0x12
+    mov x2, #0x13
+    mov x3, #0x14
+    mov x4, #0x15
+    mov x5, #0x16
+    mov x6, #0x17
+    mov x7, #0x123
+    .global unknown_syscall_instruction
+unknown_syscall_instruction:
+    svc #0
+3:
+    wfe
+    b 3b
     .popsection
 "#,
 );
@@ -72,6 +108,7 @@ fn task_config<'a>(
         private_memory_address: PRIVATE_ADDRESS,
         stack_address: STACK_ADDRESS,
         ipc_buffer_address: IPC_BUFFER_ADDRESS,
+        reserved_pages: &[],
         initial_arguments: [
             PRIVATE_ADDRESS,
             value,
@@ -79,6 +116,7 @@ fn task_config<'a>(
             sel4::sys::syscall_id::Send as usize,
         ],
         delegated_capabilities: capabilities,
+        fault_route: None,
     }
 }
 
@@ -111,6 +149,9 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
         static __task_code_end: u8;
         static mut __task_scratch_start: [u8; Frame::BYTES];
         static __task_scratch_end: u8;
+        static vm_fault_task_entry: u8;
+        static unknown_syscall_task_entry: u8;
+        static unknown_syscall_instruction: u8;
     }
     let image_start = ptr::addr_of!(__root_image_start) as usize;
     let code_start = ptr::addr_of!(__task_code_start) as usize;
@@ -214,6 +255,135 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
     assert_eq!(ipc_one, TASK_ONE_VALUE);
     assert_eq!(ipc_two, TASK_TWO_VALUE);
     sel4::debug_println!("task: per-task IPC buffers verified");
+
+    let fault_endpoint = bootstrap.allocate_fault_endpoint()?;
+    let vm_completion = bootstrap.allocate_notification()?;
+    assert_eq!(FaultBadge::new(0), Err(FaultBadgeError::ReservedZero));
+    let vm_badge = FaultBadge::new(VM_FAULT_BADGE)
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    let unknown_badge = FaultBadge::new(UNKNOWN_SYSCALL_BADGE)
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    assert_ne!(vm_badge, unknown_badge);
+    let vm_capabilities = [DelegatedCapability::notification(
+        &vm_completion,
+        COMPLETION_SLOT,
+    )];
+
+    let vm_entry = TASK_CODE_ADDRESS
+        .checked_add(
+            (ptr::addr_of!(vm_fault_task_entry) as usize)
+                .checked_sub(code_start)
+                .ok_or(BootstrapError::InvalidTaskConfiguration)?,
+        )
+        .ok_or(BootstrapError::InvalidTaskConfiguration)?;
+    let unknown_entry = TASK_CODE_ADDRESS
+        .checked_add(
+            (ptr::addr_of!(unknown_syscall_task_entry) as usize)
+                .checked_sub(code_start)
+                .ok_or(BootstrapError::InvalidTaskConfiguration)?,
+        )
+        .ok_or(BootstrapError::InvalidTaskConfiguration)?;
+    let unknown_instruction = TASK_CODE_ADDRESS
+        .checked_add(
+            (ptr::addr_of!(unknown_syscall_instruction) as usize)
+                .checked_sub(code_start)
+                .ok_or(BootstrapError::InvalidTaskConfiguration)?,
+        )
+        .ok_or(BootstrapError::InvalidTaskConfiguration)?;
+
+    let mut vm_config = task_config(&code, &vm_capabilities, VM_INITIAL_VALUE);
+    vm_config.code.entry = vm_entry;
+    vm_config.reserved_pages = &MISSING_PAGES;
+    vm_config.initial_arguments = [
+        MISSING_PAGE_ADDRESS,
+        VM_INITIAL_VALUE,
+        0,
+        sel4::sys::syscall_id::Send as usize,
+    ];
+    vm_config.fault_route =
+        Some(FaultRoute::new(&fault_endpoint, vm_badge, FAULT_SLOT));
+    let vm_task = bootstrap.create_task(vm_config)?;
+
+    let mut unknown_config = task_config(&code, &[], 0);
+    unknown_config.code.entry = unknown_entry;
+    unknown_config.fault_route =
+        Some(FaultRoute::new(&fault_endpoint, unknown_badge, FAULT_SLOT));
+    let unknown_task = bootstrap.create_task(unknown_config)?;
+
+    sel4::debug_println!("fault: routes distinguished");
+
+    vm_task.start()?;
+    let vm_received = fault_endpoint
+        .receive()
+        .map_err(|_| BootstrapError::ThreadControlFailed)?;
+    assert_eq!(vm_received.source(), vm_badge);
+    let vm_fault = match vm_received.fault() {
+        Fault::VmFault(fault) => fault,
+        _ => return Err(BootstrapError::ThreadControlFailed),
+    };
+    assert_eq!(vm_fault.address, MISSING_PAGE_ADDRESS as u64);
+    assert_eq!(vm_fault.instruction_pointer, vm_entry as u64);
+    assert!(!vm_fault.instruction_fault);
+    sel4::debug_println!("fault: VM context decoded");
+
+    let mut registers = vm_task.read_registers()?;
+    assert_eq!(
+        registers.instruction_pointer(),
+        vm_fault.instruction_pointer
+    );
+    assert_eq!(registers.general_register(0)?, MISSING_PAGE_ADDRESS as u64);
+    assert_eq!(registers.general_register(1)?, VM_INITIAL_VALUE as u64);
+    assert_eq!(
+        registers.general_register(31),
+        Err(BootstrapError::InvalidRegister)
+    );
+    registers.set_general_register(1, VM_RECOVERED_VALUE as u64)?;
+    vm_task.write_registers(&mut registers)?;
+    sel4::debug_println!("fault: register control verified");
+
+    let recovery_frame = bootstrap.allocate_frame()?;
+    // SAFETY: the VM fault keeps the task blocked, and construction reserved
+    // this page without mapping a frame or creating a live task reference.
+    let recovery_mapping = unsafe {
+        vm_task.map_recovery_frame(
+            &mut bootstrap,
+            &recovery_frame,
+            MISSING_PAGE_ADDRESS,
+        )?
+    };
+    assert!(recovery_mapping.root_slot() >= vm_task.root_slots().end);
+    fault_endpoint.reply(vm_received);
+    vm_completion.wait();
+    assert_eq!(
+        read_frame_word(&recovery_frame, scratch)?,
+        VM_RECOVERED_VALUE
+    );
+    sel4::debug_println!("fault: VM recovery continued");
+    vm_task.suspend()?;
+
+    unknown_task.resume()?;
+    let unknown_received = fault_endpoint
+        .receive()
+        .map_err(|_| BootstrapError::ThreadControlFailed)?;
+    assert_eq!(unknown_received.source(), unknown_badge);
+    let unknown_fault = match unknown_received.fault() {
+        Fault::UnknownSyscall(fault) => fault,
+        _ => return Err(BootstrapError::ThreadControlFailed),
+    };
+    assert_eq!(
+        unknown_fault.argument_registers,
+        [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x123]
+    );
+    assert_eq!(
+        unknown_fault.instruction_pointer,
+        unknown_instruction as u64
+    );
+    assert_eq!(
+        unknown_fault.stack_pointer,
+        (STACK_ADDRESS + Frame::BYTES) as u64
+    );
+    assert_eq!(unknown_fault.syscall_number, UNKNOWN_SYSCALL_NUMBER);
+    sel4::debug_println!("fault: unknown syscall decoded");
 
     // SAFETY: all temporary mappings are gone and the original scratch frame
     // remains exclusively owned by this test.
