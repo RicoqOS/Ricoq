@@ -122,6 +122,8 @@
     ./free-slots-tests
     rustc --edition 2024 --test crates/substrate/src/task.rs --target ${hostRustTarget} -o task-tests
     ./task-tests
+    rustc --edition 2024 --test crates/substrate/src/fault.rs --target ${hostRustTarget} -o fault-tests
+    ./fault-tests
     cargo build --locked -p substrate-sel4 --bin substrate-sel4 --target ${rustTargetName}
     ${pkgs.python3}/bin/python3 crates/substrate/tests/image.py --production target/${rustTargetName}/debug/substrate-sel4.elf
     cargo test --locked -p substrate-sel4 --test substrate-integration --no-run --target ${rustTargetName} --message-format=json > test-build.json
