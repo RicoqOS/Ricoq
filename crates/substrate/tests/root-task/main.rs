@@ -1,7 +1,6 @@
+//! Kernel-backed isolated-task integration test.
 #![no_std]
 #![no_main]
-
-//! Kernel-backed isolated-task integration test.
 
 use core::arch::global_asm;
 use core::ptr;
@@ -125,13 +124,8 @@ fn read_frame_word(
     frame: &Frame,
     scratch: *mut usize,
 ) -> Result<usize, BootstrapError> {
-    // SAFETY: the reserved scratch page is unmapped and exclusively controlled
-    // by this single-threaded root-task test.
     unsafe { frame.map(scratch as usize)? };
-    // SAFETY: the frame mapping covers one aligned word at `scratch` and stays
-    // live until the following unmap.
     let value = unsafe { scratch.read_volatile() };
-    // SAFETY: `value` ended the only access to the temporary mapping.
     unsafe { frame.unmap()? };
     Ok(value)
 }
@@ -141,8 +135,6 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
     sel4::debug_println!("substrate: booting");
     let mut bootstrap = Bootstrap::new(bootinfo)?;
 
-    // SAFETY: the linker script defines these symbols and the ELF verifier
-    // checks their page alignment, size, permissions, and loaded-image range.
     unsafe extern "C" {
         static __root_image_start: u8;
         static __task_code_start: u8;
@@ -164,14 +156,9 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
         Some(Frame::BYTES)
     );
 
-    // SAFETY: the linker and ELF checks prove the loaded image base and the
-    // dedicated task-code page boundaries.
     let code = unsafe { bootstrap.image_frame(image_start, code_start)? };
-    // SAFETY: the linker and ELF checks prove that scratch is one exclusively
-    // controlled image page.
     let scratch_image =
         unsafe { bootstrap.image_frame(image_start, scratch as usize)? };
-    // SAFETY: no test data is accessed through scratch while it is unmapped.
     unsafe { scratch_image.unmap()? };
 
     let completion_one = bootstrap.allocate_notification()?;
@@ -342,8 +329,6 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
     sel4::debug_println!("fault: register control verified");
 
     let recovery_frame = bootstrap.allocate_frame()?;
-    // SAFETY: the VM fault keeps the task blocked, and construction reserved
-    // this page without mapping a frame or creating a live task reference.
     let recovery_mapping = unsafe {
         vm_task.map_recovery_frame(
             &mut bootstrap,
@@ -385,15 +370,12 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
     assert_eq!(unknown_fault.syscall_number, UNKNOWN_SYSCALL_NUMBER);
     sel4::debug_println!("fault: unknown syscall decoded");
 
-    // SAFETY: all temporary mappings are gone and the original scratch frame
-    // remains exclusively owned by this test.
     unsafe { scratch_image.map(scratch as usize)? };
     sel4::debug_println!("TEST_RESULT: PASS");
     Ok(())
 }
 
 #[root_task]
-/// Reports the deterministic result before suspending the root task.
 fn main(bootinfo: &sel4::BootInfoPtr) -> ! {
     if let Err(error) = exercise(bootinfo) {
         sel4::debug_println!("test: substrate operation failed: {error:?}");

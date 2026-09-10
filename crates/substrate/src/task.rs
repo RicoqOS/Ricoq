@@ -359,13 +359,11 @@ mod tests {
     }
 
     #[test]
-    /// Guards the downward-growing stack's exclusive upper bound.
     fn accepts_distinct_aligned_pages_and_computes_stack_top() {
         assert_eq!(valid().map(|layout| layout.stack_pointer), Ok(0x4000));
     }
 
     #[test]
-    /// Rejects layouts the kernel cannot map as base pages.
     fn rejects_invalid_page_size_and_alignment() {
         assert_eq!(
             TaskLayout::validate(
@@ -396,7 +394,6 @@ mod tests {
     }
 
     #[test]
-    /// Prevents aliasing and wraparound before kernel invocations.
     fn rejects_overflow_and_overlapping_pages() {
         assert_eq!(
             TaskLayout::validate(
@@ -427,7 +424,6 @@ mod tests {
     }
 
     #[test]
-    /// Keeps initial execution inside aligned shared code.
     fn rejects_entry_outside_code_or_instruction_alignment() {
         for entry in [0x0ffc, 0x2000, 0x1002] {
             assert_eq!(
