@@ -90,14 +90,34 @@ pub struct Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcError {
     /// The payload exceeds the fixed IPC-buffer message-register capacity.
-    MessageTooLong { length: usize, capacity: usize },
+    MessageTooLong {
+        /// Number of words in the rejected payload.
+        length: usize,
+        /// Maximum number of message words supported by the IPC buffer.
+        capacity: usize,
+    },
     /// The capability list exceeds the pinned IPC-buffer capacity.
-    TooManyCapabilities { count: usize, capacity: usize },
+    TooManyCapabilities {
+        /// Number of capabilities in the rejected list.
+        count: usize,
+        /// Maximum number of capabilities supported by the IPC buffer.
+        capacity: usize,
+    },
     /// A message word index is outside the reported payload.
-    InvalidMessageIndex { index: usize, length: usize },
+    InvalidMessageIndex {
+        /// Out-of-bounds message word index.
+        index: usize,
+        /// Number of words reported for the message.
+        length: usize,
+    },
     /// A received message reported more capabilities than the configured path
     /// accepts.
-    ReceiveCapacityExceeded { count: usize, capacity: usize },
+    ReceiveCapacityExceeded {
+        /// Number of capabilities reported by the received message.
+        count: usize,
+        /// Maximum number of capabilities accepted by the receive path.
+        capacity: usize,
+    },
     /// A receive destination is reserved, occupied, or outside its CSpace.
     InvalidReceiveSlot,
     /// A receive-path state transition violated its one-shot invariant.
