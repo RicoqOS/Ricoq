@@ -81,7 +81,8 @@ mod platform {
     use crate::boot::Bootstrap;
     use crate::cspace::CSpace;
     use crate::errors::BootstrapError;
-    use crate::ipc::FaultRoute;
+    use crate::fault::FaultRoute;
+    use crate::ipc::{IpcError, ReceiveSlot};
     use crate::thread::{Registers, Thread, ThreadConfig};
     use crate::vspace::{Frame, TaskMapping, VSpace};
 
@@ -115,7 +116,7 @@ mod platform {
         /// Capabilities explicitly installed in the otherwise empty CSpace.
         pub delegated_capabilities: &'a [DelegatedCapability],
         /// Optional badged route for kernel-delivered task faults.
-        pub fault_route: Option<FaultRoute<'a>>,
+        pub fault_route: Option<FaultRoute>,
     }
 
     /// Parent-owned handles for one constructed seL4 protection domain.
@@ -221,6 +222,14 @@ mod platform {
         pub fn root_slots(&self) -> Range<usize> {
             self.root_slots.clone()
         }
+
+        /// Reserves an empty child CSpace slot for one IPC capability receive.
+        pub fn receive_slot(
+            &mut self,
+            index: usize,
+        ) -> Result<ReceiveSlot<'_>, IpcError> {
+            self.cspace.receive_slot(index)
+        }
     }
 
     impl Bootstrap<'_> {
@@ -300,9 +309,10 @@ mod platform {
             )?;
             let fault_endpoint = match config.fault_route {
                 Some(route) => {
-                    let bits = route.child_slot.try_into().map_err(|_| {
-                        BootstrapError::InvalidTaskConfiguration
-                    })?;
+                    let bits =
+                        route.child_slot().try_into().map_err(|_| {
+                            BootstrapError::InvalidTaskConfiguration
+                        })?;
                     sel4::CPtr::from_bits(bits)
                 },
                 None => sel4::init_thread::slot::NULL.cptr(),

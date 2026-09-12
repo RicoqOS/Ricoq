@@ -23,14 +23,6 @@ impl<'a> Bootstrap<'a> {
         })
     }
 
-    /// Creates a notification from normal RAM.
-    pub fn allocate_notification(
-        &mut self,
-    ) -> Result<Notification, BootstrapError> {
-        crate::object::allocate(self.bootinfo, &mut self.slots)
-            .map(Notification)
-    }
-
     /// Creates one base-page frame from normal RAM.
     pub fn allocate_frame(&mut self) -> Result<Frame, BootstrapError> {
         crate::object::allocate(self.bootinfo, &mut self.slots).map(Frame)
@@ -87,6 +79,14 @@ impl<'a> Bootstrap<'a> {
         self.slots.checkpoint()
     }
 
+    /// Removes empty root slots from general allocation for a bounded pool.
+    pub(crate) fn reserve_empty_slots(
+        &mut self,
+        count: usize,
+    ) -> Option<core::ops::Range<usize>> {
+        self.slots.reserve(count)
+    }
+
     /// Returns the resource slots retained since `checkpoint`.
     pub(crate) fn committed_slots(
         &self,
@@ -133,26 +133,6 @@ impl<'a> Bootstrap<'a> {
             return Err(BootstrapError::InvalidImageRegion);
         }
         Ok(Frame(frames.index(offset / Frame::BYTES).cap()))
-    }
-}
-
-/// An owned kernel notification capability.
-pub struct Notification(sel4::cap::Notification);
-
-impl Notification {
-    /// Returns the root-held capability for explicit delegation.
-    pub(crate) fn cap(&self) -> sel4::cap::Notification {
-        self.0
-    }
-
-    /// Signals this notification.
-    pub fn signal(&self) {
-        self.0.signal();
-    }
-
-    /// Blocks until this notification is signalled.
-    pub fn wait(&self) {
-        self.0.wait();
     }
 }
 

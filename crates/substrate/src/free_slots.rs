@@ -43,6 +43,17 @@ impl FreeSlots {
         self.remaining.start
     }
 
+    /// Reserves a contiguous empty range for independently reusable slots.
+    pub(crate) fn reserve(&mut self, count: usize) -> Option<Range<usize>> {
+        let end = self.remaining.start.checked_add(count)?;
+        if end > self.remaining.end {
+            return None;
+        }
+        let reserved = self.remaining.start..end;
+        self.remaining.start = end;
+        Some(reserved)
+    }
+
     /// Returns slots committed after a valid checkpoint.
     pub(crate) fn allocated_since(
         &self,
@@ -122,5 +133,14 @@ mod tests {
         assert_eq!(slots.try_allocate(Ok::<_, ()>), Ok(Some(7)));
         assert!(!slots.rewind(6));
         assert!(!slots.rewind(9));
+    }
+
+    #[test]
+    fn bounded_range_reservation_does_not_overlap_later_allocations() {
+        let mut slots = FreeSlots::new(7..12);
+        assert_eq!(slots.reserve(3), Some(7..10));
+        assert_eq!(slots.try_allocate(Ok::<_, ()>), Ok(Some(10)));
+        assert_eq!(slots.reserve(2), None);
+        assert_eq!(slots.try_allocate(Ok::<_, ()>), Ok(Some(11)));
     }
 }

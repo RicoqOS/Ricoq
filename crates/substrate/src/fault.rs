@@ -1,5 +1,173 @@
 //! Decoding of the fault IPC ABI used by the pinned AArch64 kernel.
 
+#[cfg(not(test))]
+mod adapter {
+    use super::{Fault, FaultDecodeError};
+    use crate::boot::Bootstrap;
+    use crate::cspace::DelegatedCapability;
+    use crate::errors::BootstrapError;
+    use crate::ipc::{
+        Badge, BadgeError, Endpoint, IpcError, Message, ReceivedMessage,
+    };
+
+    /// A nonzero badge assigned to one fault capability path.
+    pub type FaultBadge = Badge;
+    /// Failure to construct a valid fault badge.
+    pub type FaultBadgeError = BadgeError;
+
+    /// A shared endpoint adapted for kernel fault IPC validation and decoding.
+    pub struct FaultEndpoint {
+        endpoint: Endpoint,
+    }
+
+    /// A task's badged capability route to a shared fault endpoint.
+    #[derive(Clone)]
+    pub struct FaultRoute {
+        delegation: DelegatedCapability,
+    }
+
+    impl FaultRoute {
+        /// Derives one fault route through the generic endpoint mechanism.
+        pub fn new(
+            endpoint: &FaultEndpoint,
+            badge: FaultBadge,
+            child_slot: usize,
+        ) -> Self {
+            Self {
+                delegation: DelegatedCapability::badged_endpoint(
+                    &endpoint.endpoint,
+                    child_slot,
+                    badge,
+                ),
+            }
+        }
+
+        pub(crate) fn child_slot(&self) -> usize {
+            self.delegation.destination()
+        }
+
+        pub(crate) fn delegation(&self) -> &DelegatedCapability {
+            &self.delegation
+        }
+    }
+
+    /// One decoded fault retaining its exact classic-kernel reply authority.
+    #[must_use = "reply to the received fault before receiving another fault"]
+    pub struct ReceivedFault<'a> {
+        source: FaultBadge,
+        fault: Fault,
+        received: ReceivedMessage<'a>,
+    }
+
+    impl ReceivedFault<'_> {
+        /// Returns the badge assigned to the fault capability path.
+        pub fn source(&self) -> FaultBadge {
+            self.source
+        }
+
+        /// Returns the safely decoded fault context.
+        pub fn fault(&self) -> &Fault {
+            &self.fault
+        }
+    }
+
+    /// Failure to validate or decode received fault IPC.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum FaultReceiveError {
+        /// The kernel delivered an unbadged message on a fault endpoint.
+        MissingSourceBadge,
+        /// Fault IPC must not transfer capabilities.
+        UnexpectedCapabilities {
+            /// Capabilities unwrapped by seL4.
+            caps_unwrapped: usize,
+            /// Extra capability slots in the message.
+            extra_caps: usize,
+        },
+        /// The message length exceeds the pinned IPC-buffer capacity.
+        MessageTooLong {
+            /// Length reported by seL4.
+            length: usize,
+            /// Available message registers.
+            capacity: usize,
+        },
+        /// Generic endpoint state prevented a valid fault receive.
+        Ipc(IpcError),
+        /// The fault payload is malformed or unsupported.
+        Decode(FaultDecodeError),
+    }
+
+    impl FaultEndpoint {
+        /// Blocks until seL4 delivers and validates one fault.
+        pub fn receive(&self) -> Result<ReceivedFault<'_>, FaultReceiveError> {
+            let received =
+                self.endpoint.receive(None).map_err(|error| match error {
+                    IpcError::MessageTooLong { length, capacity } => {
+                        FaultReceiveError::MessageTooLong { length, capacity }
+                    },
+                    IpcError::ReceiveCapacityExceeded { count, .. } => {
+                        FaultReceiveError::UnexpectedCapabilities {
+                            caps_unwrapped: 0,
+                            extra_caps: count,
+                        }
+                    },
+                    other => FaultReceiveError::Ipc(other),
+                })?;
+            let source = match received.badge() {
+                Some(source) => source,
+                None => {
+                    received.finish();
+                    return Err(FaultReceiveError::MissingSourceBadge);
+                },
+            };
+            let message = received.message();
+            if message.caps_unwrapped() != 0 || message.extra_caps() != 0 {
+                let error = FaultReceiveError::UnexpectedCapabilities {
+                    caps_unwrapped: message.caps_unwrapped(),
+                    extra_caps: message.extra_caps(),
+                };
+                received.finish();
+                return Err(error);
+            }
+            let fault = match Fault::decode(message.label(), message.words()) {
+                Ok(fault) => fault,
+                Err(error) => {
+                    received.finish();
+                    return Err(FaultReceiveError::Decode(error));
+                },
+            };
+            Ok(ReceivedFault {
+                source,
+                fault,
+                received,
+            })
+        }
+
+        /// Replies through the authority retained by this exact received
+        /// fault.
+        pub fn reply(&self, fault: ReceivedFault<'_>) {
+            let empty = Message::empty_reply();
+            fault.received.reply(&empty);
+        }
+    }
+
+    impl Bootstrap<'_> {
+        /// Allocates a generic endpoint and exposes its fault-specific
+        /// adapter.
+        pub fn allocate_fault_endpoint(
+            &mut self,
+        ) -> Result<FaultEndpoint, BootstrapError> {
+            self.allocate_endpoint()
+                .map(|endpoint| FaultEndpoint { endpoint })
+        }
+    }
+}
+
+#[cfg(not(test))]
+pub use adapter::{
+    FaultBadge, FaultBadgeError, FaultEndpoint, FaultReceiveError, FaultRoute,
+    ReceivedFault,
+};
+
 /// A decoded fault supported by the pinned kernel configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fault {
