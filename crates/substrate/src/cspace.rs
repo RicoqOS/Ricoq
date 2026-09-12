@@ -239,7 +239,8 @@ pub(crate) fn delete_root_slots(
 
 /// Saves the current classic-kernel reply capability into a root slot.
 pub(crate) fn save_caller(slot: usize) -> Result<(), sel4::Error> {
-    let slot = sel4::init_thread::Slot::from_index(slot);
+    let slot: sel4::init_thread::Slot =
+        sel4::init_thread::Slot::from_index(slot);
     sel4::init_thread::slot::CNODE
         .cap()
         .absolute_cptr(slot.cptr())
@@ -248,7 +249,8 @@ pub(crate) fn save_caller(slot: usize) -> Result<(), sel4::Error> {
 
 /// Deletes one explicitly owned root capability slot.
 pub(crate) fn delete_root_slot(slot: usize) -> Result<(), sel4::Error> {
-    let slot = sel4::init_thread::Slot::from_index(slot);
+    let slot: sel4::init_thread::Slot =
+        sel4::init_thread::Slot::from_index(slot);
     sel4::init_thread::slot::CNODE
         .cap()
         .absolute_cptr(slot.cptr())

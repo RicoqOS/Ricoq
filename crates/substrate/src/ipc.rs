@@ -447,7 +447,9 @@ pub struct DeferredReply<'a> {
 impl DeferredReply<'_> {
     /// Replies to the blocked caller identified by this capability.
     pub fn reply(self, message: &Message) {
-        sel4::cap::Unspecified::from_bits(self.slot).send(message.prepare());
+        let slot: sel4::init_thread::Slot =
+            sel4::init_thread::Slot::from_index(self.slot);
+        slot.cap().send(message.prepare());
         self.pool.release(self.slot);
     }
 
