@@ -640,7 +640,10 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
     Ok(())
 }
 
-#[root_task]
+// The debug integration build keeps the state for the full end-to-end
+// exercise in one stack frame.  Its frame is larger than the runtime's 64 KiB
+// abort-build default, so give the test root task explicit headroom.
+#[root_task(stack_size = 128 * 1024)]
 fn main(bootinfo: &sel4::BootInfoPtr) -> ! {
     if let Err(error) = exercise(bootinfo) {
         sel4::debug_println!("test: substrate operation failed: {error:?}");
