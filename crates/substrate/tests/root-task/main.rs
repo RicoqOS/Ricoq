@@ -7,8 +7,9 @@ use core::ptr;
 
 use sel4_root_task::root_task;
 use substrate_sel4::{
-    Bootstrap, BootstrapError, DelegatedCapability, Fault, FaultBadge,
-    FaultBadgeError, FaultRoute, Frame, SharedCode, TaskConfig,
+    Badge, BadgeAllocator, Bootstrap, BootstrapError, DelegatedCapability,
+    EXTRA_CAPACITY, Fault, FaultBadge, FaultBadgeError, FaultRoute, Frame,
+    IpcError, MESSAGE_CAPACITY, Message, SharedCode, TaskConfig,
 };
 
 const TASK_CODE_ADDRESS: usize = 0x0100_0000;
@@ -21,6 +22,9 @@ const TASK_TWO_VALUE: usize = 0x2222_2222_2222_2222;
 const VM_INITIAL_VALUE: usize = 0x3333_3333_3333_3333;
 const VM_RECOVERED_VALUE: usize = 0x4444_4444_4444_4444;
 const COMPLETION_SLOT: usize = 1;
+const IPC_ENDPOINT_SLOT: usize = 2;
+const TRANSFER_SOURCE_SLOT: usize = 3;
+const TRANSFER_DESTINATION_SLOT: usize = 2;
 const FAULT_SLOT: usize = 3;
 const VM_FAULT_BADGE: sel4::Word = 0x41;
 const UNKNOWN_SYSCALL_BADGE: sel4::Word = 0x42;
@@ -28,6 +32,10 @@ const UNKNOWN_SYSCALL_NUMBER: sel4::Word = 0x123;
 const MISSING_PAGES: [usize; 1] = [MISSING_PAGE_ADDRESS];
 const UNDELEGATED_SLOT: sel4::Word = 2;
 const PROBE_SLOT: sel4::Word = 3;
+const BASIC_BADGE: sel4::Word = 0x51;
+const DEFERRED_A_BADGE: sel4::Word = 0x52;
+const DEFERRED_B_BADGE: sel4::Word = 0x53;
+const TRANSFER_BADGE: sel4::Word = 0x54;
 
 // A self-contained page avoids implicitly mapping root-task text into a child.
 global_asm!(
@@ -75,8 +83,47 @@ unknown_syscall_instruction:
 3:
     wfe
     b 3b
+
+    .global ipc_client_entry
+ipc_client_entry:
+    mov x4, x0
+    mov x2, x1
+    mov x0, #2
+    mov x1, #1
+    mov x7, #{call_syscall}
+    svc #0
+    str x2, [x4]
+    mov x0, #1
+    mov x1, #0
+    mov x7, #{send_syscall}
+    svc #0
+4:
+    wfe
+    b 4b
+
+    .global capability_sender_entry
+capability_sender_entry:
+    mov x0, #2
+    mov x1, #128
+    mov x7, #{send_syscall}
+    svc #0
+5:
+    wfe
+    b 5b
+
+    .global capability_receiver_entry
+capability_receiver_entry:
+    mov x0, #2
+    mov x1, #0
+    mov x7, #{send_syscall}
+    svc #0
+6:
+    wfe
+    b 6b
     .popsection
 "#,
+    call_syscall = const sel4::sys::syscall_id::Call,
+    send_syscall = const sel4::sys::syscall_id::Send,
 );
 
 #[repr(C, align(4096))]
@@ -130,6 +177,25 @@ fn read_frame_word(
     Ok(value)
 }
 
+/// Installs one sender-side extra-cap slot in an isolated task's IPC buffer.
+fn set_transfer_capability(
+    frame: &Frame,
+    scratch: *mut usize,
+    capability: sel4::Word,
+) -> Result<(), BootstrapError> {
+    unsafe { frame.map(scratch as usize)? };
+    // SAFETY: the mapped frame exclusively backs a page-aligned seL4 IPC
+    // buffer and remains mapped for this mutation only.
+    let buffer = unsafe { &mut *scratch.cast::<sel4::IpcBuffer>() };
+    let slot = buffer
+        .caps_or_badges_mut()
+        .get_mut(0)
+        .ok_or(BootstrapError::InvalidTaskConfiguration)?;
+    *slot = capability;
+    unsafe { frame.unmap()? };
+    Ok(())
+}
+
 /// Constructs, runs, and inspects two isolated protection domains.
 fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
     sel4::debug_println!("substrate: booting");
@@ -144,6 +210,9 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
         static vm_fault_task_entry: u8;
         static unknown_syscall_task_entry: u8;
         static unknown_syscall_instruction: u8;
+        static ipc_client_entry: u8;
+        static capability_sender_entry: u8;
+        static capability_receiver_entry: u8;
     }
     let image_start = ptr::addr_of!(__root_image_start) as usize;
     let code_start = ptr::addr_of!(__task_code_start) as usize;
@@ -277,6 +346,202 @@ fn exercise(bootinfo: &sel4::BootInfo) -> Result<(), BootstrapError> {
                 .ok_or(BootstrapError::InvalidTaskConfiguration)?,
         )
         .ok_or(BootstrapError::InvalidTaskConfiguration)?;
+    let ipc_entry = TASK_CODE_ADDRESS
+        .checked_add(
+            (ptr::addr_of!(ipc_client_entry) as usize)
+                .checked_sub(code_start)
+                .ok_or(BootstrapError::InvalidTaskConfiguration)?,
+        )
+        .ok_or(BootstrapError::InvalidTaskConfiguration)?;
+    let capability_sender = TASK_CODE_ADDRESS
+        .checked_add(
+            (ptr::addr_of!(capability_sender_entry) as usize)
+                .checked_sub(code_start)
+                .ok_or(BootstrapError::InvalidTaskConfiguration)?,
+        )
+        .ok_or(BootstrapError::InvalidTaskConfiguration)?;
+    let capability_receiver = TASK_CODE_ADDRESS
+        .checked_add(
+            (ptr::addr_of!(capability_receiver_entry) as usize)
+                .checked_sub(code_start)
+                .ok_or(BootstrapError::InvalidTaskConfiguration)?,
+        )
+        .ok_or(BootstrapError::InvalidTaskConfiguration)?;
+
+    assert_eq!(Badge::new(0), Err(substrate_sel4::BadgeError::ReservedZero));
+    assert!(matches!(
+        Message::new(0, &[0; MESSAGE_CAPACITY + 1]),
+        Err(IpcError::MessageTooLong { .. })
+    ));
+    assert!(matches!(
+        Message::with_capabilities(
+            0,
+            &[],
+            &[sel4::init_thread::slot::CNODE.cap(); EXTRA_CAPACITY + 1],
+        ),
+        Err(IpcError::TooManyCapabilities { .. })
+    ));
+    let one_word = Message::new(0, &[1])
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    assert!(matches!(
+        one_word.word(1),
+        Err(IpcError::InvalidMessageIndex { .. })
+    ));
+
+    let endpoint = bootstrap.allocate_endpoint()?;
+    let basic_completion = bootstrap.allocate_notification()?;
+    let mut ipc_badges = BadgeAllocator::new(BASIC_BADGE)
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    let basic_badge = ipc_badges
+        .allocate()
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    assert_eq!(basic_badge.raw(), BASIC_BADGE);
+    let basic_capabilities = [
+        DelegatedCapability::notification(&basic_completion, COMPLETION_SLOT),
+        DelegatedCapability::badged_endpoint(
+            &endpoint,
+            IPC_ENDPOINT_SLOT,
+            basic_badge,
+        ),
+    ];
+    let mut basic_config = task_config(&code, &basic_capabilities, 0);
+    basic_config.code.entry = ipc_entry;
+    basic_config.initial_arguments = [PRIVATE_ADDRESS, 7, 0, 0];
+    let basic_task = bootstrap.create_task(basic_config)?;
+    basic_task.start()?;
+    let basic_request = endpoint
+        .receive(None)
+        .map_err(|_| BootstrapError::ThreadControlFailed)?;
+    assert_eq!(basic_request.badge(), Some(basic_badge));
+    assert_eq!(basic_request.message().words(), &[7]);
+    let basic_reply = Message::new(0, &[49])
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    basic_request.reply(&basic_reply);
+    basic_completion.wait();
+    assert_eq!(read_frame_word(basic_task.private_memory(), scratch)?, 49);
+    sel4::debug_println!("ipc: basic request reply verified");
+
+    let completion_a = bootstrap.allocate_notification()?;
+    let completion_b = bootstrap.allocate_notification()?;
+    let badge_a = ipc_badges
+        .allocate()
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    let badge_b = ipc_badges
+        .allocate()
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    assert_eq!(badge_a.raw(), DEFERRED_A_BADGE);
+    assert_eq!(badge_b.raw(), DEFERRED_B_BADGE);
+    let capabilities_a = [
+        DelegatedCapability::notification(&completion_a, COMPLETION_SLOT),
+        DelegatedCapability::badged_endpoint(
+            &endpoint,
+            IPC_ENDPOINT_SLOT,
+            badge_a,
+        ),
+    ];
+    let capabilities_b = [
+        DelegatedCapability::notification(&completion_b, COMPLETION_SLOT),
+        DelegatedCapability::badged_endpoint(
+            &endpoint,
+            IPC_ENDPOINT_SLOT,
+            badge_b,
+        ),
+    ];
+    let mut config_a = task_config(&code, &capabilities_a, 0);
+    config_a.code.entry = ipc_entry;
+    config_a.initial_arguments = [PRIVATE_ADDRESS, 10, 0, 0];
+    let mut config_b = task_config(&code, &capabilities_b, 0);
+    config_b.code.entry = ipc_entry;
+    config_b.initial_arguments = [PRIVATE_ADDRESS, 20, 0, 0];
+    let task_a = bootstrap.create_task(config_a)?;
+    let task_b = bootstrap.create_task(config_b)?;
+    let replies = bootstrap.allocate_reply_pool(2)?;
+
+    task_a.start()?;
+    let request_a = endpoint
+        .receive(None)
+        .map_err(|_| BootstrapError::ThreadControlFailed)?;
+    assert_eq!(request_a.badge(), Some(badge_a));
+    assert_eq!(request_a.message().words(), &[10]);
+    let deferred_a = request_a
+        .defer(&replies)
+        .map_err(|_| BootstrapError::ThreadControlFailed)?;
+
+    task_b.start()?;
+    let request_b = endpoint
+        .receive(None)
+        .map_err(|_| BootstrapError::ThreadControlFailed)?;
+    assert_eq!(request_b.badge(), Some(badge_b));
+    assert_eq!(request_b.message().words(), &[20]);
+    let reply_b = Message::new(0, &[22])
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    request_b.reply(&reply_b);
+    completion_b.wait();
+    assert_eq!(read_frame_word(task_b.private_memory(), scratch)?, 22);
+
+    let reply_a = Message::new(0, &[11])
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    deferred_a.reply(&reply_a);
+    completion_a.wait();
+    assert_eq!(read_frame_word(task_a.private_memory(), scratch)?, 11);
+    sel4::debug_println!("ipc: deferred badged replies verified");
+
+    let transferred_notification = bootstrap.allocate_notification()?;
+    let transfer_badge = ipc_badges
+        .allocate()
+        .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    assert_eq!(transfer_badge.raw(), TRANSFER_BADGE);
+    let sender_capabilities = [
+        DelegatedCapability::badged_endpoint(
+            &endpoint,
+            IPC_ENDPOINT_SLOT,
+            transfer_badge,
+        ),
+        DelegatedCapability::notification(
+            &transferred_notification,
+            TRANSFER_SOURCE_SLOT,
+        ),
+    ];
+    let mut sender_config = task_config(&code, &sender_capabilities, 0);
+    sender_config.code.entry = capability_sender;
+    sender_config.initial_arguments = [0; 4];
+    let sender_task = bootstrap.create_task(sender_config)?;
+    set_transfer_capability(
+        sender_task.ipc_buffer(),
+        scratch,
+        TRANSFER_SOURCE_SLOT as sel4::Word,
+    )?;
+
+    let mut receiver_config = task_config(&code, &[], 0);
+    receiver_config.code.entry = capability_receiver;
+    receiver_config.initial_arguments = [0; 4];
+    let mut receiver_task = bootstrap.create_task(receiver_config)?;
+    assert!(matches!(
+        receiver_task.receive_slot(0),
+        Err(IpcError::InvalidReceiveSlot)
+    ));
+    assert!(matches!(
+        receiver_task.receive_slot(16),
+        Err(IpcError::InvalidReceiveSlot)
+    ));
+    let receive_slot =
+        receiver_task
+            .receive_slot(TRANSFER_DESTINATION_SLOT)
+            .map_err(|_| BootstrapError::InvalidTaskConfiguration)?;
+    sender_task.start()?;
+    let transfer = endpoint
+        .receive(Some(receive_slot))
+        .map_err(|_| BootstrapError::ThreadControlFailed)?;
+    assert_eq!(transfer.badge(), Some(transfer_badge));
+    assert_eq!(transfer.message().extra_caps(), 1);
+    transfer.finish();
+    assert!(matches!(
+        receiver_task.receive_slot(TRANSFER_DESTINATION_SLOT),
+        Err(IpcError::InvalidReceiveSlot)
+    ));
+    receiver_task.start()?;
+    transferred_notification.wait();
+    sel4::debug_println!("ipc: capability transfer used and tracked");
 
     let mut vm_config = task_config(&code, &vm_capabilities, VM_INITIAL_VALUE);
     vm_config.code.entry = vm_entry;
